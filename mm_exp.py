@@ -1,7 +1,7 @@
 import torch
 from time import time
 
-SIZE = 100
+SIZE = 500
 n_test = 100
 
 
@@ -34,14 +34,18 @@ for _ in range(n_test):
     X = torch.randint(100, size=(SIZE, SIZE))
     Y = torch.randint(100, size=(SIZE, SIZE))
     i8 += mm_int8(X, Y)
-    i16 += mm_int16(X, Y)
+    #i16 += mm_int16(X, Y)
+    #f += mm_float(X, Y)
+for _ in range(n_test):
+    X = torch.randn(SIZE, SIZE)*100
+    Y = torch.randn(SIZE, SIZE)*100
     f += mm_float(X, Y)
 
 print("int8")
 print(i8 / n_test)
 
-print("int16")
-print(i16 / n_test)
+# print("int16")
+# print(i16 / n_test)
 
 print("float32")
 print(f / n_test)
