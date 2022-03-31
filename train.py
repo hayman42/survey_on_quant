@@ -61,7 +61,7 @@ lr = 5  # learning rate
 optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1.0, gamma=0.95)
 bptt = 30
-n_epoch = 2
+n_epoch = 1
 
 total_loss = 0
 cnt = 0
@@ -69,14 +69,14 @@ loss_h = []
 ppl_h = []
 
 save_ppl = False
-saved = False
+saved = True
 if saved:
     model.load_state_dict(torch.load("./saved.bin"))
 else:
     for epoch in range(n_epoch):
         for i in tqdm(range(0, train_data.size(0) - 1, bptt)):
             d, t = get_batch(train_data, i, bptt)
-            out = model(d, generate_square_subsequent_mask(batch_size).to(device))
+            out = model(d, 0)
             loss = criterion(out.view(-1, n_tokens), t)
             optimizer.zero_grad()
             loss.backward()
@@ -99,6 +99,7 @@ else:
                     ppl_h.append(math.exp(ppl / (val_data.size(0) - 1)))
 
     plt.plot(loss_h)
+    plt.title("Train Loss")
     plt.savefig("Loss.png")
     plt.cla()
 
@@ -108,9 +109,47 @@ else:
 
     torch.save(model.state_dict(), "./saved.bin")
 
+
 ppl = 0
-for j in range(0, test_data.size(0) - 1, bptt):
+t = 0
+for j in tqdm(range(0, test_data.size(0) - 1, bptt)):
     vd, vt = get_batch(test_data, j, bptt)
-    out = model(vd, generate_square_subsequent_mask(eval_batch_size).to(device))
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    out = model(vd, 0)
+    end.record()
+    torch.cuda.synchronize()
+    t += start.elapsed_time(end)
     ppl += vd.size(0) * criterion(out.view(-1, n_tokens), vt).item()
 print(math.exp(ppl / (test_data.size(0) - 1)))
+print(t)
+
+model_2 = Transformer(n_tokens, d_model, n_head, n_layers, True)
+model_2.load_state_dict(model.state_dict())
+for i, layer in enumerate(model.encoder_layers):
+    model_2.encoder_layers[i].Attention.a = layer.Attention.a
+    model_2.encoder_layers[i].Attention.b = layer.Attention.b
+    model_2.encoder_layers[i].FeedForward.a = layer.FeedForward.a
+    model_2.encoder_layers[i].FeedForward.b = layer.FeedForward.b
+
+del model
+model_2.to(device)
+
+ppl = 0
+t = 0
+for j in tqdm(range(0, test_data.size(0) - 1, bptt)):
+    vd, vt = get_batch(test_data, j, bptt)
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    out = model_2(vd, 0)
+    end.record()
+    torch.cuda.synchronize()
+    t += start.elapsed_time(end)
+    ppl += vd.size(0) * criterion(out.view(-1, n_tokens), vt).item()
+print(math.exp(ppl / (test_data.size(0) - 1)))
+print(t)
+
+print()
+print(test_data.size(0) - 1)

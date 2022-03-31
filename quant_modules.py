@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import decimal
+import math
 
 import numpy as np
 import torch
@@ -235,11 +236,12 @@ class QuantLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        self.weight = nn.Parameter(torch.zeros([out_features, in_features]))
+        scale = 1/math.sqrt(in_features)
+        self.weight = nn.Parameter(torch.rand(out_features, in_features)*scale*2 - scale)
         self.register_buffer("weight_integer", torch.zeros_like(self.weight))
         self.register_buffer("fc_scaling_factor", torch.zeros(self.out_features))
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
+            self.bias = nn.Parameter(torch.rand(out_features)*scale*2 - scale)
             self.register_buffer("bias_integer", torch.zeros_like(self.bias))
 
         self.weight_bit = weight_bit
@@ -437,7 +439,7 @@ class IntLayerNorm(nn.Module):
         self.normalized_shape = normalized_shape
         self.eps = eps
 
-        self.weight = nn.Parameter(torch.zeros(normalized_shape))
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
 
         self.quant_mode = quant_mode
@@ -471,10 +473,16 @@ class IntLayerNorm(nn.Module):
 
     def forward(self, x, scaling_factor=None):
         if not self.quant_mode:
-            mean = x.mean(axis=2, keepdim=True)
-            y = x - mean
-            var = torch.mean(y**2, axis=2, keepdim=True)
-            x = y / torch.sqrt(self.eps + var)
+            # mean = x.mean(axis=2, keepdim=True)
+            # y = x - mean
+            # var = torch.mean(y**2, axis=2, keepdim=True)
+            # x = y / torch.sqrt(self.eps + var)
+            # x = x * self.weight + self.bias
+            u = x.mean(-1, keepdim=True)
+            s = (x - u)
+            s = s * s
+            s = s.mean(-1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
             x = x * self.weight + self.bias
             return x, None
 

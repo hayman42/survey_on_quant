@@ -13,32 +13,31 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = n_heads
         self.hidden_size = hidden_size
         self.attention_head_size = hidden_size // n_heads
-        self.q = QuantLinear(hidden_size, hidden_size, bias=True, quant_mode=quant_mode)
-        self.k = QuantLinear(hidden_size, hidden_size, bias=True, quant_mode=quant_mode)
-        self.v = QuantLinear(hidden_size, hidden_size, bias=True, quant_mode=quant_mode)
-        self.act = QuantAct(8)
-        self.softmax = IntSoftmax(output_bit=8, quant_mode=quant_mode)
+        self.q = nn.Linear(hidden_size, hidden_size)
+        self.k = nn.Linear(hidden_size, hidden_size)
+        self.v = nn.Linear(hidden_size, hidden_size)
+        self.softmax = nn.Softmax(dim=-1)
         self.quant_mode = quant_mode
-        self.a, self.b = torch.ones(1).to('cuda:2'), torch.ones(1).to('cuda:2')
-        self.alpha = 0.9
+        self.a, self.b = None, None
+        self.alpha = 0.2
 
     def forward(self, x, att_mask):
         if not self.quant_mode:
-            self.a = self.alpha * x.min() + (1 - self.alpha) * self.a
-            self.b = self.alpha * x.max() + (1 - self.alpha) * self.b
+            if self.a is None:
+                self.a, self.b = x.min(), x.max()
+            else:
+                self.a = self.alpha * x.min() + (1 - self.alpha) * self.a
+                self.b = self.alpha * x.max() + (1 - self.alpha) * self.b
         scale = (self.b - self.a) / 256
 
-        if self.quant_mode:
-            x = torch.clamp(x, self.a, self.b)
-
-        q, s_q = self.q(x, scale)
-        k, s_k = self.k(x, scale)
-        v, s_v = self.v(x, scale)
+        q = self.q(x)
+        k = self.k(x)
+        v = self.v(x)
         q = q.reshape(q.shape[0], q.shape[1], self.n_heads, self.attention_head_size).permute(0, 2, 1, 3)
         k = k.reshape(k.shape[0], k.shape[1], self.n_heads, self.attention_head_size).permute(0, 2, 3, 1)
         v = v.reshape(v.shape[0], v.shape[1], self.n_heads, self.attention_head_size).permute(0, 2, 1, 3)
         att_scores = torch.matmul(q, k) / math.sqrt(self.attention_head_size) + att_mask
-        att_probs, _ = self.softmax(att_scores, s_q*s_k if self.quant_mode else None)
+        att_probs = self.softmax(att_scores)
         context = torch.matmul(att_probs, v).permute(0, 2, 1, 3).contiguous()
         return context.reshape(context.shape[0], context.shape[1], self.hidden_size)
 
@@ -61,20 +60,10 @@ class LayerNorm(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, hidden_size, output_size, quant_mode=False):
         super(FeedForward, self).__init__()
-        self.linear = QuantLinear(hidden_size, output_size, quant_mode=quant_mode)
-        self.act = QuantAct(8)
-        self.quant_mode = quant_mode
-        self.a, self.b = torch.ones(1).to('cuda:2'), torch.ones(1).to('cuda:2')
-        self.alpha = 0.2
+        self.linear = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
-        if not self.quant_mode:
-            self.a = self.alpha * x.min() + (1 - self.alpha) * self.a
-            self.b = self.alpha * x.max() + (1 - self.alpha) * self.b
-        scale = (self.b - self.a) / 256
-        if self.quant_mode:
-            x = torch.clamp(x, self.a, self.b)
-        x, _ = self.linear(x, scale)
+        x = self.linear(x)
         return F.relu(x)
 
 
@@ -82,13 +71,12 @@ class Encoder(nn.Module):
     def __init__(self, hidden_size, n_heads, quant_mode):
         super(Encoder, self).__init__()
         self.Attention = MultiHeadAttention(hidden_size, n_heads, quant_mode)
-        self.LayerNorm = IntLayerNorm(hidden_size, 1e-15, quant_mode=quant_mode)
+        self.LayerNorm = LayerNorm(hidden_size)
         self.FeedForward = FeedForward(hidden_size, hidden_size, quant_mode)
 
     def forward(self, x, att_mask):
         att = self.Attention(x, att_mask)
-        scale = (att.max() - att.min()) / 256
-        att, _ = self.LayerNorm(att, scale)
+        att = self.LayerNorm(att)
         x = x + att
         return x + self.FeedForward(x)
 
@@ -136,11 +124,10 @@ class Transformer(nn.Module):
         self.embedding = nn.Embedding(n_tokens, d_model)
         self.pe = PositionalEncoding(d_model)
         self.encoder_layers = nn.ModuleList([Encoder(d_model, n_head, quant_mode=quant_mode) for _ in range(n_layers)])
-        self.decoder = QuantLinear(d_model, n_tokens)
+        self.decoder = nn.Linear(d_model, n_tokens)
 
     def forward(self, x, att_mask):
         x = self.pe(self.embedding(x))
         for i, layer in enumerate(self.encoder_layers):
             x = layer(x, att_mask)
-        x, _ = self.decoder(x)
-        return x
+        return self.decoder(x)
